@@ -1,1 +1,423 @@
+const SPREADSHEET_ID = "1o9GwzGNOvtkMOJUTPSX2ap65U1T5qkR-OHwsqWSvih8";
+
+const EVENT_LOG_SHEET = "Event_Log";
+const PRODUCT_UPDATES_SHEET = "Product_Updates";
+const HOME_FEED_CACHE_SHEET = "Home_Feed_Cache";
+const ERROR_LOG_SHEET = "Error Log";
+const RESULT_FEEDBACK_SHEET = "Result Feedback";
+
+const TZ = "America/Denver";
+
+/* =========================
+   SPREADSHEET ACCESS
+========================= */
+function ss_() {
+  return SpreadsheetApp.openById(SPREADSHEET_ID);
+}
+
+/* =========================
+   ENTRY POINTS
+========================= */
+function doGet(e) {
+  const params = (e && e.parameter) ? e.parameter : {};
+  const action = String(params.action || "").trim();
+
+  if (action === "health") {
+    return json_({
+      ok: true,
+      service: "cm_master_logger",
+      spreadsheet_id: SPREADSHEET_ID,
+      ts: new Date().toISOString()
+    });
+  }
+
+  if (action === "refreshHomeFeedCache") return json_(refreshHomeFeedCache_());
+  if (action === "getHomeFeed") return json_(getHomeFeedFromCache_());
+
+  return json_({ ok: true });
+}
+
+function doPost(e) {
+  const body = parseBody_(e);
+  const action = String(body.action || "").trim();
+
+  if (action === "logEvent") {
+    return json_(logEvent_(body.payload || {}));
+  }
+
+  if (action === "submitErrorReport") {
+    return json_(submitErrorReport_(body.payload || {}));
+  }
+
+  if (action === "submitResultFeedback") {
+    return json_(submitResultFeedback_(body.payload || {}));
+  }
+
+  return json_({ ok: false, error: "Unknown action", action: action });
+}
+
+/* =========================
+   HELPERS
+========================= */
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function parseBody_(e) {
+  try {
+    return JSON.parse((e && e.postData && e.postData.contents) || "{}");
+  } catch (err) {
+    return {};
+  }
+}
+
+function nowStamp_() {
+  return Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd HH:mm:ss");
+}
+
+function ensureSheet_(sheetName, headers) {
+  const spreadsheet = ss_();
+  let sheet = spreadsheet.getSheetByName(sheetName);
+
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(sheetName);
+  }
+
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  return sheet;
+}
+
+/* =========================
+   LOGGING
+========================= */
+function logEvent_(p) {
+  const headers = [
+    "timestamp_iso",
+    "timestamp_ms",
+    "app",
+    "page",
+    "event_type",
+    "query",
+    "query_lc",
+    "query_normalized",
+    "selected_name",
+    "selected_code",
+    "selected_type",
+    "sport",
+    "year",
+    "route_target",
+    "user_id",
+    "session_id",
+    "result_count",
+    "status_note",
+    "status",
+    "source",
+    "metadata_1",
+    "metadata_2",
+    "raw_payload_json"
+  ];
+
+  const sheet = ensureSheet_(EVENT_LOG_SHEET, headers);
+  const now = new Date();
+  const query = p.query || "";
+  const queryNormalized = p.query_normalized || normalizeLogText_(query);
+
+  sheet.appendRow([
+    now.toISOString(),
+    now.getTime(),
+    p.app || "",
+    p.page || "",
+    p.event_type || "",
+    query,
+    String(query || "").toLowerCase(),
+    queryNormalized,
+    p.selected_name || "",
+    p.selected_code || "",
+    p.selected_type || "",
+    p.sport || "",
+    p.year || "",
+    p.route_target || "",
+    p.user_id || "",
+    p.session_id || "",
+    p.result_count || "",
+    p.status_note || "",
+    p.status || "ok",
+    p.source || "",
+    p.metadata_1 || "",
+    p.metadata_2 || "",
+    JSON.stringify(p || {})
+  ]);
+
+  return { ok: true };
+}
+
+function normalizeLogText_(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\w\s']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function submitErrorReport_(p) {
+  const headers = [
+    "timestamp",
+    "app",
+    "page",
+    "query",
+    "details",
+    "user_agent"
+  ];
+
+  const sheet = ensureSheet_(ERROR_LOG_SHEET, headers);
+
+  sheet.appendRow([
+    nowStamp_(),
+    p.app || "",
+    p.page || "",
+    p.query || "",
+    p.details || "",
+    p.user_agent || ""
+  ]);
+
+  return { ok: true };
+}
+
+function submitResultFeedback_(p) {
+  const headers = [
+    "timestamp",
+    "app",
+    "page",
+    "query",
+    "feedback",
+    "result_title",
+    "result_type"
+  ];
+
+  const sheet = ensureSheet_(RESULT_FEEDBACK_SHEET, headers);
+
+  sheet.appendRow([
+    nowStamp_(),
+    p.app || "",
+    p.page || "",
+    p.query || "",
+    p.feedback || "",
+    p.result_title || "",
+    p.result_type || ""
+  ]);
+
+  return { ok: true };
+}
+
+/* =========================
+   CACHE BUILD
+========================= */
+function refreshHomeFeedCache_() {
+  const trendingChecklists = buildTrending_("checklists");
+  const trendingVault = buildTrending_("vault");
+  const justAdded = getJustAdded_(4);
+
+  const out = [];
+  const now = new Date().toISOString();
+
+  trendingChecklists.forEach((item, i) => {
+    out.push(buildRow_("trending_checklists", i + 1, item, now));
+  });
+
+  trendingVault.forEach((item, i) => {
+    out.push(buildRow_("trending_print_runs", i + 1, item, now));
+  });
+
+  justAdded.forEach((item, i) => {
+    out.push(buildRow_("just_added", i + 1, item, now));
+  });
+
+  const headers = [
+    "section",
+    "slot",
+    "label",
+    "query",
+    "code",
+    "sport",
+    "year",
+    "type",
+    "target",
+    "url",
+    "badge",
+    "sub",
+    "count",
+    "updated_at"
+  ];
+
+  const sheet = ensureSheet_(HOME_FEED_CACHE_SHEET, headers);
+
+  if (out.length === 0) {
+    Logger.log("No data - skipping cache overwrite");
+    return { ok: true, skipped: true };
+  }
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, 14).setValues([headers]);
+  sheet.getRange(2, 1, out.length, 14).setValues(out);
+
+  return { ok: true, refreshed: true, count: out.length };
+}
+
+/* =========================
+   BUILD TRENDING
+========================= */
+function buildTrending_(target) {
+  const sheet = ss_().getSheetByName(EVENT_LOG_SHEET);
+  if (!sheet) return [];
+
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+
+  const agg = {};
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+
+    const event = String(row[4] || "").toLowerCase();
+    if (!["search_submit", "typeahead_select", "product_view", "chat_query"].includes(event)) continue;
+
+    const route = String(row[13] || "").toLowerCase();
+    const app = String(row[2] || "").toLowerCase();
+
+    const inferred = route || (app === "vault" ? "vault" : "checklists");
+    if (target === "vault" && inferred !== "vault") continue;
+    if (target === "checklists" && inferred === "vault") continue;
+
+    const name = row[8] || row[5];
+    const code = row[9] || "";
+    const sport = row[11] || "";
+    const year = row[12] || "";
+
+    const key = code || name;
+    if (!key) continue;
+
+    if (!agg[key]) {
+      agg[key] = {
+        label: name,
+        query: name,
+        code: code,
+        sport: sport,
+        year: year,
+        count: 0,
+        target: target
+      };
+    }
+
+    agg[key].count++;
+  }
+
+  return Object.values(agg)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map(item => {
+      const base = target === "vault" ? "/vault/" : "/checklists/";
+
+      return {
+        label: item.label,
+        query: item.query,
+        code: item.code,
+        sport: item.sport,
+        year: item.year,
+        target: target,
+        url: base + "?q=" + encodeURIComponent(item.query),
+        sub: item.count + " recent searches",
+        count: item.count
+      };
+    });
+}
+
+/* =========================
+   JUST ADDED
+========================= */
+function getJustAdded_(limit) {
+  const sheet = ss_().getSheetByName(PRODUCT_UPDATES_SHEET);
+  if (!sheet) return [];
+
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+
+  return values.slice(1)
+    .filter(r => String(r[1]).toLowerCase() === "true")
+    .slice(0, limit)
+    .map(r => ({
+      label: r[4],
+      query: r[5] || r[4],
+      url: r[6],
+      sport: r[7],
+      year: r[8],
+      note: r[9],
+      target: r[3] || "checklists"
+    }));
+}
+
+/* =========================
+   BUILD ROW
+========================= */
+function buildRow_(section, slot, item, now) {
+  return [
+    section,
+    slot,
+    item.label,
+    item.query,
+    item.code || "",
+    item.sport || "",
+    item.year || "",
+    "product",
+    item.target,
+    item.url,
+    "CM",
+    item.sub || "New data available",
+    item.count || 0,
+    now
+  ];
+}
+
+/* =========================
+   READ CACHE
+========================= */
+function getHomeFeedFromCache_() {
+  const sheet = ss_().getSheetByName(HOME_FEED_CACHE_SHEET);
+  if (!sheet) return { ok: true, rows: [] };
+
+  const data = sheet.getDataRange().getValues();
+  return { ok: true, rows: data.slice(1) };
+}
+
+/* =========================
+   TRIGGERS
+========================= */
+function installTriggers() {
+  deleteTriggers_();
+
+  ScriptApp.newTrigger("refreshHomeFeedCache_")
+    .timeBased()
+    .everyHours(1)
+    .create();
+
+  Logger.log("Trigger installed");
+}
+
+function deleteTriggers_() {
+  ScriptApp.getProjectTriggers()
+    .forEach(t => ScriptApp.deleteTrigger(t));
+}
+
+function onEdit(e) {
+  if (e.source.getActiveSheet().getName() === PRODUCT_UPDATES_SHEET) {
+    refreshHomeFeedCache_();
+  }
+}
+
+function refreshNow() {
+  refreshHomeFeedCache_();
+}
 
