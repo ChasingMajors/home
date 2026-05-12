@@ -1,422 +1,100 @@
-const SPREADSHEET_ID = "1o9GwzGNOvtkMOJUTPSX2ap65U1T5qkR-OHwsqWSvih8";
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#070707" />
+  <title>Chasing Majors | Sports Card Search Engine</title>
+  <meta name="description" content="Search sports card checklists, rookies, parallels, print runs, SSPs, autographs, inserts, and release data with Chasing Majors." />
+  <link rel="canonical" href="https://www.chasingmajors.com/" />
+  <meta property="og:title" content="Chasing Majors | Sports Card Search Engine" />
+  <meta property="og:description" content="Search checklists, print runs, rookies, parallels, SSPs, autographs, inserts, and release data." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://www.chasingmajors.com/" />
 
-const EVENT_LOG_SHEET = "Event_Log";
-const PRODUCT_UPDATES_SHEET = "Product_Updates";
-const HOME_FEED_CACHE_SHEET = "Home_Feed_Cache";
-const ERROR_LOG_SHEET = "Error Log";
-const RESULT_FEEDBACK_SHEET = "Result Feedback";
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Oswald:wght@600;700&display=swap" rel="stylesheet">
 
-const TZ = "America/Denver";
-
-/* =========================
-   SPREADSHEET ACCESS
-========================= */
-function ss_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
-}
-
-/* =========================
-   ENTRY POINTS
-========================= */
-function doGet(e) {
-  const params = (e && e.parameter) ? e.parameter : {};
-  const action = String(params.action || "").trim();
-
-  if (action === "health") {
-    return json_({
-      ok: true,
-      service: "cm_master_logger",
-      spreadsheet_id: SPREADSHEET_ID,
-      ts: new Date().toISOString()
-    });
-  }
-
-  if (action === "refreshHomeFeedCache") return json_(refreshHomeFeedCache_());
-  if (action === "getHomeFeed") return json_(getHomeFeedFromCache_());
-
-  return json_({ ok: true });
-}
-
-function doPost(e) {
-  const body = parseBody_(e);
-  const action = String(body.action || "").trim();
-
-  if (action === "logEvent") {
-    return json_(logEvent_(body.payload || {}));
-  }
-
-  if (action === "submitErrorReport") {
-    return json_(submitErrorReport_(body.payload || {}));
-  }
-
-  if (action === "submitResultFeedback") {
-    return json_(submitResultFeedback_(body.payload || {}));
-  }
-
-  return json_({ ok: false, error: "Unknown action", action: action });
-}
-
-/* =========================
-   HELPERS
-========================= */
-function json_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function parseBody_(e) {
-  try {
-    return JSON.parse((e && e.postData && e.postData.contents) || "{}");
-  } catch (err) {
-    return {};
-  }
-}
-
-function nowStamp_() {
-  return Utilities.formatDate(new Date(), TZ, "yyyy-MM-dd HH:mm:ss");
-}
-
-function ensureSheet_(sheetName, headers) {
-  const spreadsheet = ss_();
-  let sheet = spreadsheet.getSheetByName(sheetName);
-
-  if (!sheet) {
-    sheet = spreadsheet.insertSheet(sheetName);
-  }
-
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  }
-
-  return sheet;
-}
-
-/* =========================
-   LOGGING
-========================= */
-function logEvent_(p) {
-  const headers = [
-    "timestamp_iso",
-    "timestamp_ms",
-    "app",
-    "page",
-    "event_type",
-    "query",
-    "query_lc",
-    "query_normalized",
-    "selected_name",
-    "selected_code",
-    "selected_type",
-    "sport",
-    "year",
-    "route_target",
-    "user_id",
-    "session_id",
-    "result_count",
-    "status_note",
-    "status",
-    "source",
-    "metadata_1",
-    "metadata_2",
-    "raw_payload_json"
-  ];
-
-  const sheet = ensureSheet_(EVENT_LOG_SHEET, headers);
-  const now = new Date();
-  const query = p.query || "";
-  const queryNormalized = p.query_normalized || normalizeLogText_(query);
-
-  sheet.appendRow([
-    now.toISOString(),
-    now.getTime(),
-    p.app || "",
-    p.page || "",
-    p.event_type || "",
-    query,
-    String(query || "").toLowerCase(),
-    queryNormalized,
-    p.selected_name || "",
-    p.selected_code || "",
-    p.selected_type || "",
-    p.sport || "",
-    p.year || "",
-    p.route_target || "",
-    p.user_id || "",
-    p.session_id || "",
-    p.result_count || "",
-    p.status_note || "",
-    p.status || "ok",
-    p.source || "",
-    p.metadata_1 || "",
-    p.metadata_2 || "",
-    JSON.stringify(p || {})
-  ]);
-
-  return { ok: true };
-}
-
-function normalizeLogText_(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^\w\s']/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function submitErrorReport_(p) {
-  const headers = [
-    "timestamp",
-    "app",
-    "page",
-    "query",
-    "details",
-    "user_agent"
-  ];
-
-  const sheet = ensureSheet_(ERROR_LOG_SHEET, headers);
-
-  sheet.appendRow([
-    nowStamp_(),
-    p.app || "",
-    p.page || "",
-    p.query || "",
-    p.details || "",
-    p.user_agent || ""
-  ]);
-
-  return { ok: true };
-}
-
-function submitResultFeedback_(p) {
-  const headers = [
-    "timestamp",
-    "app",
-    "page",
-    "query",
-    "feedback",
-    "result_title",
-    "result_type"
-  ];
-
-  const sheet = ensureSheet_(RESULT_FEEDBACK_SHEET, headers);
-
-  sheet.appendRow([
-    nowStamp_(),
-    p.app || "",
-    p.page || "",
-    p.query || "",
-    p.feedback || "",
-    p.result_title || "",
-    p.result_type || ""
-  ]);
-
-  return { ok: true };
-}
-
-/* =========================
-   CACHE BUILD
-========================= */
-function refreshHomeFeedCache_() {
-  const trendingChecklists = buildTrending_("checklists");
-  const trendingVault = buildTrending_("vault");
-  const justAdded = getJustAdded_(4);
-
-  const out = [];
-  const now = new Date().toISOString();
-
-  trendingChecklists.forEach((item, i) => {
-    out.push(buildRow_("trending_checklists", i + 1, item, now));
-  });
-
-  trendingVault.forEach((item, i) => {
-    out.push(buildRow_("trending_print_runs", i + 1, item, now));
-  });
-
-  justAdded.forEach((item, i) => {
-    out.push(buildRow_("just_added", i + 1, item, now));
-  });
-
-  const headers = [
-    "section",
-    "slot",
-    "label",
-    "query",
-    "code",
-    "sport",
-    "year",
-    "type",
-    "target",
-    "url",
-    "badge",
-    "sub",
-    "count",
-    "updated_at"
-  ];
-
-  const sheet = ensureSheet_(HOME_FEED_CACHE_SHEET, headers);
-
-  if (out.length === 0) {
-    Logger.log("No data - skipping cache overwrite");
-    return { ok: true, skipped: true };
-  }
-
-  sheet.clearContents();
-  sheet.getRange(1, 1, 1, 14).setValues([headers]);
-  sheet.getRange(2, 1, out.length, 14).setValues(out);
-
-  return { ok: true, refreshed: true, count: out.length };
-}
-
-/* =========================
-   BUILD TRENDING
-========================= */
-function buildTrending_(target) {
-  const sheet = ss_().getSheetByName(EVENT_LOG_SHEET);
-  if (!sheet) return [];
-
-  const values = sheet.getDataRange().getValues();
-  if (values.length < 2) return [];
-
-  const agg = {};
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-
-    const event = String(row[4] || "").toLowerCase();
-    if (!["search_submit", "typeahead_select", "product_view", "chat_query"].includes(event)) continue;
-
-    const route = String(row[13] || "").toLowerCase();
-    const app = String(row[2] || "").toLowerCase();
-
-    const inferred = route || (app === "vault" ? "vault" : "checklists");
-    if (target === "vault" && inferred !== "vault") continue;
-    if (target === "checklists" && inferred === "vault") continue;
-
-    const name = row[8] || row[5];
-    const code = row[9] || "";
-    const sport = row[11] || "";
-    const year = row[12] || "";
-
-    const key = code || name;
-    if (!key) continue;
-
-    if (!agg[key]) {
-      agg[key] = {
-        label: name,
-        query: name,
-        code: code,
-        sport: sport,
-        year: year,
-        count: 0,
-        target: target
-      };
+  <style>
+    :root{
+      --bg:#070707;
+      --text:#fff;
+      --muted:rgba(255,255,255,.70);
+      --line:rgba(255,255,255,.13);
+      --line2:rgba(255,255,255,.22);
+      --gold:#f5c542;
+      --blue:#1e90ff;
+      --blue2:#1479db;
+      --green:#29d17d;
+      --max:1180px;
+      --shadow:0 22px 70px rgba(0,0,0,.38);
+      color-scheme:dark;
     }
 
-    agg[key].count++;
-  }
+    *{box-sizing:border-box}
+    html{min-height:100%;scroll-behavior:smooth}
+    body{
+      min-height:100%;
+      margin:0;
+      font-family:Inter,Arial,sans-serif;
+      background:
+        radial-gradient(circle at 16% 0%, rgba(245,197,66,.18), transparent 31rem),
+        radial-gradient(circle at 84% 0%, rgba(30,144,255,.20), transparent 34rem),
+        linear-gradient(180deg,#070707,#111 48rem,#080808);
+      color:var(--text);
+    }
 
-  return Object.values(agg)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 3)
-    .map(item => {
-      const base = target === "vault" ? "/vault/" : "/checklists/";
+    a{color:inherit}
+    button,input{font:inherit}
 
-      return {
-        label: item.label,
-        query: item.query,
-        code: item.code,
-        sport: item.sport,
-        year: item.year,
-        target: target,
-        url: base + "?q=" + encodeURIComponent(item.query),
-        sub: item.count + " recent searches",
-        count: item.count
-      };
-    });
-}
+    .page{position:relative;overflow:hidden}
+    .cardWall{
+      position:absolute;
+      inset:0 0 auto 0;
+      height:590px;
+      pointer-events:none;
+      opacity:.28;
+      background-image:
+        linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,.10) 1px, transparent 1px);
+      background-size:78px 108px;
+      mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.78) 52%,transparent 100%);
+    }
 
-/* =========================
-   JUST ADDED
-========================= */
-function getJustAdded_(limit) {
-  const sheet = ss_().getSheetByName(PRODUCT_UPDATES_SHEET);
-  if (!sheet) return [];
+    .cardWall:after{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        radial-gradient(circle at 38% 16%, rgba(245,197,66,.22), transparent 15rem),
+        radial-gradient(circle at 68% 10%, rgba(30,144,255,.20), transparent 17rem);
+    }
 
-  const values = sheet.getDataRange().getValues();
-  if (values.length < 2) return [];
+    .wrap{
+      position:relative;
+      width:min(var(--max), calc(100% - 32px));
+      margin:0 auto;
+      padding:20px 0 42px;
+    }
 
-  return values.slice(1)
-    .filter(r => String(r[1]).toLowerCase() === "true")
-    .slice(0, limit)
-    .map(r => ({
-      label: r[4],
-      query: r[5] || r[4],
-      url: r[6],
-      sport: r[7],
-      year: r[8],
-      note: r[9],
-      target: r[3] || "checklists"
-    }));
-}
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      min-height:54px;
+      margin-bottom:18px;
+    }
 
-/* =========================
-   BUILD ROW
-========================= */
-function buildRow_(section, slot, item, now) {
-  return [
-    section,
-    slot,
-    item.label,
-    item.query,
-    item.code || "",
-    item.sport || "",
-    item.year || "",
-    "product",
-    item.target,
-    item.url,
-    "CM",
-    item.sub || "New data available",
-    item.count || 0,
-    now
-  ];
-}
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      text-decoration:none;
+      min-width:0;
+    }
 
-/* =========================
-   READ CACHE
-========================= */
-function getHomeFeedFromCache_() {
-  const sheet = ss_().getSheetByName(HOME_FEED_CACHE_SHEET);
-  if (!sheet) return { ok: true, rows: [] };
-
-  const data = sheet.getDataRange().getValues();
-  return { ok: true, rows: data.slice(1) };
-}
-
-/* =========================
-   TRIGGERS
-========================= */
-function installTriggers() {
-  deleteTriggers_();
-
-  ScriptApp.newTrigger("refreshHomeFeedCache_")
-    .timeBased()
-    .everyHours(1)
-    .create();
-
-  Logger.log("Trigger installed");
-}
-
-function deleteTriggers_() {
-  ScriptApp.getProjectTriggers()
-    .forEach(t => ScriptApp.deleteTrigger(t));
-}
-
-function onEdit(e) {
-  if (e.source.getActiveSheet().getName() === PRODUCT_UPDATES_SHEET) {
-    refreshHomeFeedCache_();
-  }
-}
-
-function refreshNow() {
-  refreshHomeFeedCache_();
-}
+    .brandMark{
+      width:38px;
+      height:38px;
